@@ -579,8 +579,13 @@ app.post('/api/payment/manual-create', async (req, res) => {
     try {
       data = JSON.parse(rawText);
     } catch {
-      console.error('[Mustika Manual] Non-JSON response:', rawText);
-      return res.status(502).json({ message: 'Response tidak valid dari Mustika Payment' });
+      console.error('[Mustika Manual] Non-JSON response status:', response.status);
+      console.error('[Mustika Manual] Non-JSON response body:', rawText.slice(0, 500));
+      return res.status(502).json({ 
+        message: 'Response tidak valid dari Mustika Payment', 
+        detail: rawText.slice(0, 200),
+        http_status: response.status
+      });
     }
 
     console.log('[Mustika Manual] create response:', JSON.stringify(data));
