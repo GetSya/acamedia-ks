@@ -6,10 +6,10 @@ import QrisCropped from '../components/QrisCropped';
 
 interface QrisData {
   order_id: string;
-  ref_no: string;
-  qr_url: string;
-  payment_link: string;
+  qr_string: string;
   amount: number;
+  total_payment: number;
+  expired_at: string;
 }
 
 type PageState = 'init' | 'loading' | 'qris' | 'success' | 'expired' | 'error';
@@ -32,11 +32,8 @@ export default function Pay() {
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
-  // Auto-buat QRIS saat halaman dimuat jika amount valid
   useEffect(() => {
-    if (amount >= 10) {
-      createQris();
-    }
+    if (amount >= 10) createQris();
     return () => clearTimers();
   }, []);
 
@@ -66,11 +63,10 @@ export default function Pay() {
   };
 
   const startPolling = (data: QrisData) => {
-    // Polling setiap 5 detik
     const poll = async () => {
       try {
         const res = await fetch(
-          `/api/payment/manual-check?ref_no=${encodeURIComponent(data.ref_no)}&order_id=${encodeURIComponent(data.order_id)}`
+          `/api/payment/manual-check?order_id=${encodeURIComponent(data.order_id)}&amount=${encodeURIComponent(data.amount)}`
         );
         const result = await res.json();
 
@@ -82,21 +78,16 @@ export default function Pay() {
           setPageState('expired');
         }
       } catch {
-        // silent — lanjut polling
+        // silent
       }
     };
 
-    poll(); // cek langsung pertama kali
+    poll();
     pollingRef.current = setInterval(poll, 5000);
 
-    // Countdown 30 menit
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearTimers();
-          setPageState('expired');
-          return 0;
-        }
+        if (prev <= 1) { clearTimers(); setPageState('expired'); return 0; }
         return prev - 1;
       });
     }, 1000);
@@ -108,7 +99,6 @@ export default function Pay() {
     return `${m}:${s}`;
   };
 
-  // Amount tidak valid
   if (!amount || amount < 10) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -138,7 +128,6 @@ export default function Pay() {
 
         <div className="p-6 flex flex-col items-center gap-5">
 
-          {/* Loading */}
           {pageState === 'loading' && (
             <div className="flex flex-col items-center gap-3 py-8">
               <Loader2 className="w-12 h-12 text-emerald-500 animate-spin" />
@@ -146,7 +135,6 @@ export default function Pay() {
             </div>
           )}
 
-          {/* QRIS siap */}
           {pageState === 'qris' && qrisData && (
             <>
               <div className="flex items-center gap-2 text-amber-600 bg-amber-50 px-4 py-2 rounded-full text-sm font-medium w-full justify-center">
@@ -154,15 +142,17 @@ export default function Pay() {
                 <span>Menunggu pembayaran · {formatTime(timeLeft)}</span>
               </div>
 
-              <div className="p-2 border-2 border-emerald-200 rounded-xl bg-white shadow-inner">
-                <QrisCropped
-                  src={qrisData.qr_url}
-                  alt="QRIS Code"
-                  className="w-72 h-72 object-contain"
-                />
+              <div className="p-3 border-2 border-emerald-200 rounded-xl bg-white shadow-inner">
+                <QrisCropped qrString={qrisData.qr_string} size={280} />
               </div>
 
               <div className="text-center space-y-1">
+                {qrisData.total_payment !== qrisData.amount && (
+                  <p className="text-sm text-gray-500">
+                    Total bayar: <span className="font-bold text-gray-800">{formatCurrency(qrisData.total_payment)}</span>
+                    <span className="text-xs text-gray-400 ml-1">(sudah termasuk biaya layanan)</span>
+                  </p>
+                )}
                 <p className="text-xs text-gray-400">Scan dengan GoPay, OVO, DANA, ShopeePay, dan lainnya</p>
               </div>
 
@@ -171,22 +161,10 @@ export default function Pay() {
                 <span>Mengecek status otomatis setiap 5 detik...</span>
               </div>
 
-              <a
-                href={qrisData.payment_link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-sm text-emerald-600 underline underline-offset-2 hover:text-emerald-700 font-medium"
-              >
-                Bayar via link (tanpa scan)
-              </a>
-
-              <p className="text-xs text-gray-400 font-mono">
-                Order: #{qrisData.order_id}
-              </p>
+              <p className="text-xs text-gray-400 font-mono">Order: #{qrisData.order_id}</p>
             </>
           )}
 
-          {/* Sukses */}
           {pageState === 'success' && (
             <div className="flex flex-col items-center gap-4 py-6 text-center">
               <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center">
@@ -198,22 +176,17 @@ export default function Pay() {
                 <span className="font-semibold text-gray-700">{formatCurrency(amount)}</span>{' '}
                 telah dikonfirmasi.
               </p>
-              {qrisData && (
-                <p className="text-xs text-gray-400 font-mono">Order: #{qrisData.order_id}</p>
-              )}
+              {qrisData && <p className="text-xs text-gray-400 font-mono">Order: #{qrisData.order_id}</p>}
             </div>
           )}
 
-          {/* Expired */}
           {pageState === 'expired' && (
             <div className="flex flex-col items-center gap-4 py-6 text-center">
               <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center">
                 <Clock className="w-12 h-12 text-orange-500" />
               </div>
               <h2 className="text-xl font-bold text-gray-900">QR Kadaluarsa</h2>
-              <p className="text-sm text-gray-500">
-                Waktu pembayaran habis. Buat QR baru untuk melanjutkan.
-              </p>
+              <p className="text-sm text-gray-500">Waktu pembayaran habis. Buat QR baru untuk melanjutkan.</p>
               <button
                 onClick={createQris}
                 className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-6 py-3 rounded-xl transition-colors"
@@ -224,7 +197,6 @@ export default function Pay() {
             </div>
           )}
 
-          {/* Error */}
           {pageState === 'error' && (
             <div className="flex flex-col items-center gap-4 py-6 text-center">
               <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center">
@@ -241,12 +213,10 @@ export default function Pay() {
               </button>
             </div>
           )}
-
         </div>
 
-        {/* Footer */}
         <div className="border-t border-gray-100 px-6 py-3 text-center">
-          <p className="text-xs text-gray-400">Powered by Mustika Payment · Transaksi Aman & Terenkripsi</p>
+          <p className="text-xs text-gray-400">Powered by Pakasir · Transaksi Aman & Terenkripsi</p>
         </div>
       </div>
     </div>

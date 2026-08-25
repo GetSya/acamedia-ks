@@ -380,59 +380,40 @@ app.delete('/api/admin/items/:kode_item', authenticate, authorize(['admin']), as
   }
 });
 
-// --- PAYMENT ROUTES (Mustika Payment QRIS) ---
+// --- PAYMENT ROUTES (Pakasir QRIS) ---
 
 app.post('/api/payment/create-qris', authenticate, async (req: AuthRequest, res) => {
-  const { order_id, amount, product_name, customer_name } = req.body;
+  const { order_id, amount } = req.body;
   if (!order_id || !amount) {
     return res.status(400).json({ message: 'order_id dan amount wajib diisi' });
   }
 
-  const apiKey = process.env.MUSTIKA_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ message: 'Mustika API Key belum dikonfigurasi' });
+  const apiKey = process.env.PAKASIR_API_KEY;
+  const project = process.env.PAKASIR_PROJECT;
+  if (!apiKey || !project) {
+    return res.status(500).json({ message: 'Pakasir API Key / Project belum dikonfigurasi' });
   }
 
-  const redirectUrl = `${process.env.APP_URL}/payment-success?order_id=${order_id}`;
-
   try {
-    const bodyParams = new URLSearchParams({
-      amount: String(amount),
-      product_name: product_name || 'Pembayaran',
-      customer_name: customer_name || 'Pelanggan',
-      expiry: '30',
-      redirect_url: redirectUrl
-    });
-
-    const response = await fetch('https://mustikapayment.com/api/v1/create/qris', {
+    const response = await fetch('https://app.pakasir.com/api/transactioncreate/qris', {
       method: 'POST',
-      headers: {
-        'X-Api-Key': apiKey,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: bodyParams.toString()
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project, order_id, amount: Number(amount), api_key: apiKey })
     });
 
-    const rawText = await response.text();
-    let data: any;
-    try {
-      data = JSON.parse(rawText);
-    } catch {
-      console.error('[Mustika] Non-JSON response:', rawText);
-      return res.status(502).json({ message: 'Response tidak valid dari Mustika Payment', detail: rawText.slice(0, 200) });
-    }
+    const data = await response.json();
+    console.log('[Pakasir] create-qris response:', JSON.stringify(data));
 
-    console.log('[Mustika] create-qris response:', JSON.stringify(data));
-
-    if (!response.ok || data.status !== 'success') {
+    if (!response.ok || !data.payment) {
       return res.status(502).json({ message: data.message || 'Gagal membuat QRIS', detail: data });
     }
 
     res.json({
-      ref_no: data.ref_no,
-      qr_url: data.qr_url,
-      payment_link: data.payment_link,
-      amount: data.amount
+      order_id: data.payment.order_id,
+      qr_string: data.payment.payment_number,
+      amount: data.payment.amount,
+      total_payment: data.payment.total_payment,
+      expired_at: data.payment.expired_at
     });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
@@ -440,31 +421,29 @@ app.post('/api/payment/create-qris', authenticate, async (req: AuthRequest, res)
 });
 
 app.get('/api/payment/check-qris', authenticate, async (req: AuthRequest, res) => {
-  const { ref_no } = req.query;
-  if (!ref_no) {
-    return res.status(400).json({ message: 'ref_no wajib diisi' });
+  const { order_id, amount } = req.query;
+  if (!order_id || !amount) {
+    return res.status(400).json({ message: 'order_id dan amount wajib diisi' });
   }
 
-  const apiKey = process.env.MUSTIKA_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ message: 'Mustika API Key belum dikonfigurasi' });
+  const apiKey = process.env.PAKASIR_API_KEY;
+  const project = process.env.PAKASIR_PROJECT;
+  if (!apiKey || !project) {
+    return res.status(500).json({ message: 'Pakasir API Key / Project belum dikonfigurasi' });
   }
 
   try {
-    const response = await fetch(
-      `https://mustikapayment.com/api/v1/check/qris?ref_no=${encodeURIComponent(String(ref_no))}`,
-      {
-        headers: { 'X-Api-Key': apiKey }
-      }
-    );
-
+    const url = `https://app.pakasir.com/api/transactiondetail?project=${encodeURIComponent(project)}&amount=${encodeURIComponent(String(amount))}&order_id=${encodeURIComponent(String(order_id))}&api_key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url);
     const data = await response.json();
 
     if (!response.ok) {
-      return res.status(502).json({ message: data.message || 'Gagal cek status QRIS' });
+      return res.status(502).json({ message: data.message || 'Gagal cek status' });
     }
 
-    res.json(data);
+    // Normalkan: Pakasir pakai "completed", kita expose sebagai "success" untuk konsistensi
+    const status = data.transaction?.status === 'completed' ? 'success' : (data.transaction?.status || 'pending');
+    res.json({ ...data, status });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }
@@ -545,53 +524,27 @@ app.post('/api/payment/manual-create', async (req, res) => {
     return res.status(400).json({ message: 'amount tidak valid (minimal Rp 10)' });
   }
 
-  const apiKey = process.env.MUSTIKA_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ message: 'Mustika API Key belum dikonfigurasi' });
+  const apiKey = process.env.PAKASIR_API_KEY;
+  const project = process.env.PAKASIR_PROJECT;
+  if (!apiKey || !project) {
+    return res.status(500).json({ message: 'Pakasir API Key / Project belum dikonfigurasi' });
   }
 
-  // Buat order_id unik jika tidak dikirim
   const finalOrderId = order_id || ('MNL-' + Math.random().toString(36).substr(2, 9).toUpperCase());
   const timestamp = new Date().toISOString();
-  const redirectUrl = `${process.env.APP_URL}/pay?order_id=${finalOrderId}&amount=${amount}`;
 
   try {
-    // Buat QRIS via Mustika Payment
-    const bodyParams = new URLSearchParams({
-      amount: String(amount),
-      product_name: 'Pembayaran Bot',
-      customer_name: 'Pelanggan',
-      expiry: '30',
-      redirect_url: redirectUrl
-    });
-
-    const response = await fetch('https://mustikapayment.com/api/v1/create/qris', {
+    const response = await fetch('https://app.pakasir.com/api/transactioncreate/qris', {
       method: 'POST',
-      headers: {
-        'X-Api-Key': apiKey,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: bodyParams.toString()
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project, order_id: finalOrderId, amount: Number(amount), api_key: apiKey })
     });
 
-    const rawText = await response.text();
-    let data: any;
-    try {
-      data = JSON.parse(rawText);
-    } catch {
-      console.error('[Mustika Manual] Non-JSON response status:', response.status);
-      console.error('[Mustika Manual] Non-JSON response body:', rawText.slice(0, 500));
-      return res.status(502).json({ 
-        message: 'Response tidak valid dari Mustika Payment', 
-        detail: rawText.slice(0, 200),
-        http_status: response.status
-      });
-    }
+    const data = await response.json();
+    console.log('[Pakasir Manual] create response:', JSON.stringify(data));
 
-    console.log('[Mustika Manual] create response:', JSON.stringify(data));
-
-    if (!response.ok || data.status !== 'success') {
-      return res.status(502).json({ message: data.message || 'Gagal membuat QRIS' });
+    if (!response.ok || !data.payment) {
+      return res.status(502).json({ message: data.message || 'Gagal membuat QRIS', detail: data });
     }
 
     // Simpan ke sheet orders-manual dengan status 0 (pending)
@@ -599,10 +552,10 @@ app.post('/api/payment/manual-create', async (req, res) => {
 
     res.json({
       order_id: finalOrderId,
-      ref_no: data.ref_no,
-      qr_url: data.qr_url,
-      payment_link: data.payment_link,
-      amount: data.amount
+      qr_string: data.payment.payment_number,
+      amount: data.payment.amount,
+      total_payment: data.payment.total_payment,
+      expired_at: data.payment.expired_at
     });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
@@ -610,31 +563,31 @@ app.post('/api/payment/manual-create', async (req, res) => {
 });
 
 app.get('/api/payment/manual-check', async (req, res) => {
-  const { ref_no, order_id } = req.query;
-  if (!ref_no || !order_id) {
-    return res.status(400).json({ message: 'ref_no dan order_id wajib diisi' });
+  const { order_id, amount } = req.query;
+  if (!order_id || !amount) {
+    return res.status(400).json({ message: 'order_id dan amount wajib diisi' });
   }
 
-  const apiKey = process.env.MUSTIKA_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ message: 'Mustika API Key belum dikonfigurasi' });
+  const apiKey = process.env.PAKASIR_API_KEY;
+  const project = process.env.PAKASIR_PROJECT;
+  if (!apiKey || !project) {
+    return res.status(500).json({ message: 'Pakasir API Key / Project belum dikonfigurasi' });
   }
 
   try {
-    const response = await fetch(
-      `https://mustikapayment.com/api/v1/check/qris?ref_no=${encodeURIComponent(String(ref_no))}`,
-      { headers: { 'X-Api-Key': apiKey } }
-    );
-
+    const url = `https://app.pakasir.com/api/transactiondetail?project=${encodeURIComponent(project)}&amount=${encodeURIComponent(String(amount))}&order_id=${encodeURIComponent(String(order_id))}&api_key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url);
     const data = await response.json();
-    console.log('[Mustika Manual] check response:', JSON.stringify(data));
+    console.log('[Pakasir Manual] check response:', JSON.stringify(data));
 
     if (!response.ok) {
-      return res.status(502).json({ message: data.message || 'Gagal cek status QRIS' });
+      return res.status(502).json({ message: data.message || 'Gagal cek status' });
     }
 
-    // Jika sudah success, update status di sheet orders-manual menjadi 1
-    if (data.status === 'success') {
+    const isPaid = data.transaction?.status === 'completed';
+
+    // Update sheet jika sudah lunas
+    if (isPaid) {
       const orders = await getRowsAsObjects('orders-manual');
       const order = orders.find((o: any) => o.order_id === String(order_id));
       if (order && order.status !== '1') {
@@ -644,7 +597,8 @@ app.get('/api/payment/manual-check', async (req, res) => {
       }
     }
 
-    res.json(data);
+    const status = isPaid ? 'success' : (data.transaction?.status || 'pending');
+    res.json({ ...data, status });
   } catch (error: any) {
     res.status(500).json({ message: error.message });
   }

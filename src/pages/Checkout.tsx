@@ -8,10 +8,11 @@ import toast from 'react-hot-toast';
 import QrisCropped from '../components/QrisCropped';
 
 interface QrisData {
-  ref_no: string;
-  qr_url: string;
-  payment_link: string;
+  order_id: string;
+  qr_string: string;
   amount: number;
+  total_payment: number;
+  expired_at: string;
 }
 
 type QrisStatus = 'pending' | 'success' | 'expired';
@@ -28,14 +29,12 @@ export default function Checkout() {
   const [orderId, setOrderId] = useState<string | null>(null);
   const [qrisStatus, setQrisStatus] = useState<QrisStatus>('pending');
   const [pollingActive, setPollingActive] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(30 * 60); // 30 menit dalam detik
+  const [timeLeft, setTimeLeft] = useState(30 * 60);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (items.length === 0) {
-      navigate('/marketplace');
-    }
+    if (items.length === 0) navigate('/marketplace');
   }, [items.length, navigate]);
 
   // Polling status QRIS setiap 5 detik
@@ -44,23 +43,19 @@ export default function Checkout() {
 
     const poll = async () => {
       try {
-        const res = await fetch(`/api/payment/check-qris?ref_no=${encodeURIComponent(qrisData.ref_no)}`, {
-          headers: { 'Authorization': `Bearer ${token}` },
-          credentials: 'include'
-        });
+        const res = await fetch(
+          `/api/payment/check-qris?order_id=${encodeURIComponent(qrisData.order_id)}&amount=${encodeURIComponent(qrisData.amount)}`,
+          { headers: { 'Authorization': `Bearer ${token}` }, credentials: 'include' }
+        );
         const data = await res.json();
 
         if (data.status === 'success') {
           setQrisStatus('success');
           setPollingActive(false);
           clearPolling();
-          // Update status order di sheet
           await fetch('/api/orders/verify-payment', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             body: JSON.stringify({ order_id: orderId }),
             credentials: 'include'
           });
@@ -72,35 +67,25 @@ export default function Checkout() {
           clearPolling();
         }
       } catch {
-        // silent — tetap polling
+        // silent
       }
     };
 
-    poll(); // langsung cek pertama kali
+    poll();
     pollingRef.current = setInterval(poll, 5000);
-
     return () => clearPolling();
   }, [pollingActive, qrisData, token]);
 
-  // Countdown timer 30 menit
+  // Countdown timer
   useEffect(() => {
     if (!pollingActive) return;
-
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearPolling();
-          setPollingActive(false);
-          setQrisStatus('expired');
-          return 0;
-        }
+        if (prev <= 1) { clearPolling(); setPollingActive(false); setQrisStatus('expired'); return 0; }
         return prev - 1;
       });
     }, 1000);
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [pollingActive]);
 
   const clearPolling = () => {
@@ -116,10 +101,7 @@ export default function Checkout() {
       // 1. Buat order
       const orderRes = await fetch('/api/orders', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ items, total_price: totalPrice, noted }),
         credentials: 'include'
       });
@@ -129,19 +111,11 @@ export default function Checkout() {
       const newOrderId = orderResult.order_id;
       setOrderId(newOrderId);
 
-      // 2. Buat QRIS via Mustika Payment
+      // 2. Buat QRIS via Pakasir
       const qrisRes = await fetch('/api/payment/create-qris', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          order_id: newOrderId,
-          amount: totalPrice,
-          product_name: items.map(i => i.nama_item).join(', ').slice(0, 50),
-          customer_name: user?.nama_lengkap || user?.username
-        }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ order_id: newOrderId, amount: totalPrice }),
         credentials: 'include'
       });
       const qrisResult = await qrisRes.json();
@@ -158,32 +132,14 @@ export default function Checkout() {
     }
   };
 
-  const handleCloseModal = () => {
-    clearPolling();
-    setPollingActive(false);
-    setQrisData(null);
-    setQrisStatus('pending');
-    if (qrisStatus === 'success') {
-      navigate('/history');
-    }
-  };
-
   const handleRetryQris = async () => {
     if (!orderId || !token) return;
     setLoading(true);
     try {
       const qrisRes = await fetch('/api/payment/create-qris', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          order_id: orderId,
-          amount: totalPrice,
-          product_name: items.map(i => i.nama_item).join(', ').slice(0, 50),
-          customer_name: user?.nama_lengkap || user?.username
-        }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ order_id: orderId, amount: totalPrice }),
         credentials: 'include'
       });
       const qrisResult = await qrisRes.json();
@@ -198,6 +154,14 @@ export default function Checkout() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCloseModal = () => {
+    clearPolling();
+    setPollingActive(false);
+    setQrisData(null);
+    setQrisStatus('pending');
+    if (qrisStatus === 'success') navigate('/history');
   };
 
   const formatTime = (seconds: number) => {
@@ -239,19 +203,17 @@ export default function Checkout() {
             <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
               <CreditCard className="w-5 h-5 text-emerald-600" /> Metode Pembayaran
             </h2>
-            <div className="grid grid-cols-1 gap-3">
-              <div className="p-4 border-2 border-emerald-500 bg-emerald-50 rounded-xl">
-                <div className="flex justify-between items-start mb-2">
-                  <p className="font-bold text-emerald-700">Mustika Payment (QRIS)</p>
-                  <span className="text-xs font-bold text-white bg-emerald-500 px-2 py-0.5 rounded-full">QRIS</span>
-                </div>
-                <p className="text-xs text-emerald-600 leading-relaxed">
-                  Bayar dengan QRIS — bisa di-scan oleh GoPay, OVO, DANA, ShopeePay, Bank Mandiri Livin, BCA Mobile, dan aplikasi pembayaran lainnya.
-                </p>
-                <div className="mt-2 flex gap-1 items-center">
-                  <Badge variant="success">Otomatis</Badge>
-                  <Badge variant="info">Aman</Badge>
-                </div>
+            <div className="p-4 border-2 border-emerald-500 bg-emerald-50 rounded-xl">
+              <div className="flex justify-between items-start mb-2">
+                <p className="font-bold text-emerald-700">Pakasir (QRIS)</p>
+                <span className="text-xs font-bold text-white bg-emerald-500 px-2 py-0.5 rounded-full">QRIS</span>
+              </div>
+              <p className="text-xs text-emerald-600 leading-relaxed">
+                Bayar dengan QRIS — bisa di-scan oleh GoPay, OVO, DANA, ShopeePay, BCA Mobile, dan aplikasi pembayaran lainnya.
+              </p>
+              <div className="mt-2 flex gap-1 items-center">
+                <Badge variant="success">Otomatis</Badge>
+                <Badge variant="info">Aman</Badge>
               </div>
             </div>
           </Card>
@@ -275,11 +237,7 @@ export default function Checkout() {
                 <span className="font-black text-2xl text-emerald-600">{formatCurrency(totalPrice)}</span>
               </div>
             </div>
-            <Button
-              onClick={handlePlaceOrder}
-              className="w-full h-14 text-xl shadow-lg shadow-emerald-600/20"
-              disabled={loading}
-            >
+            <Button onClick={handlePlaceOrder} className="w-full h-14 text-xl shadow-lg shadow-emerald-600/20" disabled={loading}>
               {loading ? 'Memproses Pesanan...' : 'Bayar Sekarang'}
             </Button>
             <div className="flex items-center justify-center gap-2 mt-4 text-xs text-gray-400">
@@ -292,24 +250,18 @@ export default function Checkout() {
       {/* Modal QRIS */}
       {qrisData && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg relative">
-            {/* Header */}
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm relative">
             <div className="flex items-center justify-between p-5 border-b border-gray-100">
               <div>
                 <h3 className="text-lg font-bold text-gray-900">Scan QRIS untuk Membayar</h3>
                 <p className="text-xs text-gray-400 mt-0.5">Order #{orderId}</p>
               </div>
-              <button
-                onClick={handleCloseModal}
-                className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100"
-                aria-label="Tutup modal"
-              >
+              <button onClick={handleCloseModal} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100" aria-label="Tutup modal">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="p-5 flex flex-col items-center gap-4">
-              {/* Status: Pending — tampilkan QR */}
               {qrisStatus === 'pending' && (
                 <>
                   <div className="flex items-center gap-2 text-amber-600 bg-amber-50 px-3 py-1.5 rounded-full text-sm font-medium">
@@ -317,16 +269,13 @@ export default function Checkout() {
                     <span>Menunggu pembayaran · {formatTime(timeLeft)}</span>
                   </div>
 
-                  <div className="p-2 border-2 border-emerald-200 rounded-xl bg-white shadow-inner">
-                    <QrisCropped
-                      src={qrisData.qr_url}
-                      alt="QRIS Code"
-                      className="w-full max-w-xs object-contain"
-                    />
+                  <div className="p-3 border-2 border-emerald-200 rounded-xl bg-white shadow-inner">
+                    <QrisCropped qrString={qrisData.qr_string} size={280} />
                   </div>
 
                   <div className="text-center space-y-1">
-                    <p className="text-2xl font-black text-emerald-600">{formatCurrency(qrisData.amount)}</p>
+                    <p className="text-2xl font-black text-emerald-600">{formatCurrency(qrisData.total_payment)}</p>
+                    <p className="text-xs text-gray-400">Sudah termasuk biaya layanan</p>
                     <p className="text-xs text-gray-400">Scan dengan aplikasi pembayaran apapun</p>
                   </div>
 
@@ -334,19 +283,9 @@ export default function Checkout() {
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
                     <span>Mengecek status otomatis setiap 5 detik...</span>
                   </div>
-
-                  <a
-                    href={qrisData.payment_link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-emerald-600 underline underline-offset-2 hover:text-emerald-700"
-                  >
-                    Bayar via link (tanpa scan)
-                  </a>
                 </>
               )}
 
-              {/* Status: Success */}
               {qrisStatus === 'success' && (
                 <div className="flex flex-col items-center gap-4 py-4">
                   <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center">
@@ -362,16 +301,13 @@ export default function Checkout() {
                 </div>
               )}
 
-              {/* Status: Expired */}
               {qrisStatus === 'expired' && (
                 <div className="flex flex-col items-center gap-4 py-4">
                   <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center">
                     <Clock className="w-12 h-12 text-red-500" />
                   </div>
                   <h4 className="text-xl font-bold text-gray-900">QR Kadaluarsa</h4>
-                  <p className="text-sm text-gray-500 text-center">
-                    Waktu pembayaran habis. Klik tombol di bawah untuk memperbarui QR Code.
-                  </p>
+                  <p className="text-sm text-gray-500 text-center">Waktu pembayaran habis. Klik tombol di bawah untuk memperbarui QR Code.</p>
                   <Button onClick={handleRetryQris} disabled={loading} className="w-full flex items-center justify-center gap-2">
                     <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                     {loading ? 'Memperbarui...' : 'Perbarui QR Code'}
