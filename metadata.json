@@ -1,0 +1,6 @@
+{
+  "name": "AcaMedia - Tempat Digital Marketplace Nomor 1 Termurah",
+  "description": "Digital marketplace with modern admin dashboard and Google Sheets integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
